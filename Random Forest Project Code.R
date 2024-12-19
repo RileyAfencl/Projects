@@ -199,10 +199,12 @@ varImpPlot(rfmodel)
 boxplot(r_tdata1$Resolution_Time, main = "Resolution_Time")
 
 # Dimensionality reduction followed here because it was clear that the predictors were all redundant versions of 
-# each other. For example, if it was a passowrd issue, it would guarantee be an account issue and tech response of
+# each other. For example, if it was a password issue, it would guarantee be an account issue and tech response of
 # password reset. 
 
 # Simplifying the data
+# This code was used to check the MAPE of each predictor separately. To do so you would simple switch 'Customer' with the beginning word of whichever predictor you wanted to measure. 
+# All predictors presented a MAPE of approximately 125%
 r_tdatas1 <- r_tdata1 %>% 
   select(Resolution_Time, starts_with('Customer'))
 
