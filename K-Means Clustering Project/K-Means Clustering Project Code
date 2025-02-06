@@ -1,0 +1,686 @@
+# K-Means Clustering 
+# Author: Riley Fencl
+# Date: 2/1/25
+
+# Loading Packages
+# I use a general package script that cover a wide variety of functions.
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+library(broom)
+library(car)
+library(Hmisc)
+library(tidyr)
+library(scales)
+library(class)
+library(stringr)
+library(forecast)
+library(Metrics)
+library(tidymodels)
+library(readxl)
+library(readr)
+library(treemapify)
+library(lubridate)
+library(caret)
+library(randomForest)
+
+
+# Reading the Dataset
+df <- read.csv('clustdata.csv')
+
+# Grabbing the specific rows
+# This custom function gives me the numerical index for each column in a dataset. 
+df_index(df)
+
+# Removing columns that I have no interest in using
+# Dataframe Iteration 1
+df1 <- df[,1:20]
+
+# Confirming output
+head(df1)
+
+# Creating new data file for sharing
+csv(df1, 'clustdata1')
+
+# Checking for NAs in each column using a function I created.
+# This function returns the total count/percentage for each column in a dataset. 
+na_sums(df1)
+
+# The only NAs are in Income, checking distribution to determine next steps.
+ggplot(df1, aes(x = Income)) + geom_histogram(bins = 200, na.rm = TRUE)
+
+# The histogram revealed a massive outlier in the variable, checking summary stats.
+summary(df1$Income)
+
+# Checking the Boxplot
+ggplot(df1, aes(x = Income)) + geom_boxplot(na.rm = TRUE)
+
+# Checking the highest values in the variable
+df1 %>%
+  arrange(desc(df1$Income)) %>%
+  select(Income) %>%
+  head(n = 20)
+
+# Since we have multiple outliers, it is appropriate to calcuate MAD score here to determine the severity of each and
+# create a numerical justification for removal beyond rationale alone. 
+# Grabbing Median Value
+medval <- median(df1$Income, na.rm = TRUE)
+# Grabbing MAD Value
+madval <- mad(df$Income, na.rm = TRUE)
+# Creating MAD score
+mads <- abs(df$Income - medval) / madval
+# Adding mad score to dataframe
+df1$mad_score <- mads
+
+# Checking Highest values again
+# Checking the highest values in the variable
+df1 %>%
+  arrange(desc(df1$Income)) %>%
+  select(Income, mad_score) %>%
+  head(n = 20)
+
+# Given that the general threshold for a mad score is 3, and we have values that are greater than 4 and less than 3, and given
+# that we are creating a K-means cluster model which is highly sensitive to outliers my decision is to remove all rows where
+# where the MAD score is greater than 3. Not only will these rows drastically impact the model due to the severity of their of
+# magnitude they are also outliers on a key numerical variable (income) that is a crucial variable for the model for its
+# respective purpose. Additionally, these outliers make up .36% of the total dataset, as well as they represent a different
+# population in terms of income bracket that we do not have the representation for to accurately measure or gauge. Finally,
+# the removal of these outliers benefits the model greatly in terms of both performance and its generalizability in its 
+# application. 
+
+# Removing the values
+# Creating a 2nd Dataframe, and sorting desc
+df2 <- df1 %>%
+  # Can use either Income or mad_score here
+  arrange(desc(df1$Income))
+# Confirming Sorting
+head(df2, n = 10) 
+# Removing top 8
+df2 <- df2[-c(1:8),]
+# Confirming Output
+head(df2, n = 10)
+# Dropping mad_score
+df2 <- df2 %>%
+  select(-mad_score)
+
+# With the outliers corrected, it is time to check the distribution once more to determine what to do with NA values. 
+ggplot(df2, aes(x = Income)) + geom_histogram(bins = 100, na.rm = TRUE)
+
+# With the distribution not being so clearly or perfectly normal and having a slight right skew, I wanted to verify normality
+# before any sort of imputation method was considered, although I was leaning towards the mean at this point. 
+shapiro.test(na.omit(df2$Income))
+
+# The p-value returned was 8.71e-15, meaning that we cannot assume normality at all. This means that the mean is not a good
+# value to impute here, and given the slight right skew, median is probably the best value. 
+
+# However, I do not like imputing values if I can avoid it and I would rather just drop the rows. That being said, there is a 
+# logical method to determine the better option. Since we would only be losing 24 rows, or roughly 1.08% of the data, the loss
+# is not significant enough to bar the option completely. The determining factor for imputation or dropping is if the NAs are
+# occuring randomly relative to the other variables. 
+
+# Grabbing the NA Dataframe
+df_na <- df2 %>%
+  filter(is.na(Income))
+             
+# Checking the variables for patterns
+# Since it's only 24 rows View() works well here since we can see all variables/rows at the same time. 
+View(df_na) 
+
+# Since there are no clear patterns or obvious relations between variables, dropping the rows, in my opinion, is the best 
+# option moving forward. This option prevents unnecessary imputations, a potential insertion of bias, as well as it is more than
+# likely not going to affect any of the natural patterns within the data. 
+
+# Before Dropping NA rows, since Income was the only variable that I looked at I want to reconfirm that the NAs are only in a 
+# single variable. 
+na_sums(df2)
+
+# After confirmIncome is the only row with NAs, we are clear to drop the rows.
+# Dropping the NA Rows
+# Creating a new dataframe
+df3 <- na.omit(df2)
+
+# Finally, with outliers for Income solved and NAs fixed, we can begin fixing some other issues with the variables we have. 
+
+# Converting Year_Birth to age
+# Since we are only 2 months into 2025, using 2024 as the year to subtract from will result in more accurate ages.
+df3 <- df3 %>%
+  mutate(age = 2024 - Year_Birth) %>%
+  select(-Year_Birth) %>%
+  relocate(age, .before = Education)
+
+# Next, rather than having multiple individual categories of spending, and to reduce the overall amount of features, combining
+# all of the amount spent metrics into a single amount spent metric allows us to focus on general spending habits and it
+# simplifies the interpretation of the model as well. 
+
+# Aggregateing the spending values
+df3 <- df3 %>%
+  mutate(total_spending = MntWines + MntFruits + MntMeatProducts +
+           MntFishProducts + MntSweetProducts + MntGoldProds) %>%
+  select(-c(MntWines, MntFruits, MntMeatProducts, 
+            MntFishProducts, MntSweetProducts, MntGoldProds)) %>%
+  relocate(total_spending, .before = NumDealsPurchases)
+
+# Aggregating total purchases
+df3 <- df3 %>%
+  mutate(total_purchases = NumDealsPurchases + NumWebPurchases + NumCatalogPurchases +
+           NumStorePurchases) %>%
+  select(-c(NumDealsPurchases, NumWebPurchases, NumCatalogPurchases, 
+            NumStorePurchases)) %>%
+  relocate(total_purchases, .before = NumWebVisitsMonth)
+
+# Lowering the Case of all 
+colnames(df3) <- tolower(colnames(df3))
+
+# Converting the dt_customer column to a date type
+df3$dt_customer <- as.Date(df3$dt_customer, format = '%d-%m-%Y')
+
+# Confirming Output
+glimpse(df3)
+
+# Converting the dt_customer variable to days_cust, a variable that tells us how long they have been a customer. 
+df3 <- df3 %>%
+  mutate(days_cust = as.numeric(Sys.Date() - dt_customer)) %>%
+  select(-dt_customer) %>%
+  relocate(days_cust, .before = recency)
+
+# With the base cleaning tasks complete, now it is time to go through the variables and check for distributions, outliers, etc.
+# This step was already performed with Income since it was the only column with NA values but we still have several unchecked
+# columns. 
+
+# Before proceeding, creating a sharable file at this step of the modeling process is a good idea. 
+csv(df3, 'clustdata_EDA')
+
+# Next we will check the distributions of our numeric variables!
+# Starting With age
+ggplot(df3, aes(x = age)) + geom_histogram(bins = 100)
+
+# Immediately it looks like we have a value that is over the age of 100. 
+summary(df3$age)
+
+# Since this distribution is skewed, we will be using MAD score again to determine outliers. 
+
+# Checking the highest values in the variable
+df3 %>%
+  arrange(desc(df3$age)) %>%
+  select(age) %>%
+  head(n = 20)
+
+# Since we have multiple outliers, it is appropriate to calcuate MAD score here to determine the severity of each and
+# create a numerical justification for removal beyond rationale alone. 
+# Grabbing Median Value
+medval <- median(df3$age)
+# Grabbing MAD Value
+madval <- mad(df3$age)
+# Creating MAD score
+mads <- abs(df3$age - medval) / madval
+# Adding mad score to dataframe
+df3$mad_score <- mads
+
+# Checking Highest values again
+# Checking the highest values in the variable
+df3 %>%
+  arrange(desc(age)) %>%
+  select(age, mad_score) %>%
+  head(n = 20)
+
+# In this case since the values are clear input mistakes, there is no reliable way to correct the values, imputation
+# introduces artificial data, and it is only 3 observations, removing the observations here makes the most sense. 
+
+# Removing the values
+# Creating a 4th Dataframe since we are removing rows, and sorting desc
+df4 <- df3 %>%
+  # Can use either age or mad_score here
+  arrange(desc(age))
+# Confirming Sorting
+head(df4, n = 10) 
+# Removing top 3
+df4 <- df4[-c(1:3),]
+# Confirming Output
+head(df4, n = 10)
+# Dropping mad_score
+df4 <- df4 %>%
+  select(-mad_score)
+
+# Rerunning our Histogram for age.
+ggplot(df4, aes(x = age)) + geom_histogram(bins = 12)
+
+# With age looking fairly normally distributed and the outliers taken care of, we can now move on to days_cust.
+ggplot(df4, aes(x = days_cust)) + geom_histogram(bins = 100)
+
+# Given the histogram the distribution of days_cust is relatively close to uniform which needs no immediate attention so moving
+# forward is acceptable here. 
+
+# Next we look recency, the amount of days since a purchase or interaction with our business
+ggplot(df4, aes(x = recency)) + geom_histogram(bins = 100)
+
+# Once again another uniform distribution it looks like, so we may proceed. 
+
+# Next up is total spending in dollars.
+ggplot(df4, aes(x = total_spending)) + geom_histogram(bins = 100)
+
+# total_spending looks exactly like we would expect it to given the nature of the variable. We would expect for the bulk of
+# consumers to spend very little. Once we standardize this variable it should prevent the large values from causing any issues.
+
+# Looking at total_purchases
+ggplot(df4, aes(x = total_purchases)) + geom_histogram(bins = 100, binwidth = 1)
+
+# With nothing too concerning, despite some right-skewed outlier values, a quick summary/mad_score check is simple enough
+# to verify. 
+
+# Pullilng summary
+summary(df4$total_purchases)
+
+# Check MAD score
+
+# Grabbing Median Value
+medval <- median(df4$total_purchases)
+# Grabbing MAD Value
+madval <- mad(df4$total_purchases)
+# Creating MAD score
+mads <- abs(df4$total_purchases - medval) / madval
+# Adding mad score to dataframe
+df4$mad_score <- mads
+
+# Checking Highest values again
+# Checking the highest values in the variable
+df4 %>%
+  arrange(desc(total_purchases)) %>%
+  select(total_purchases, mad_score) %>%
+  head(n = 20)
+
+# With the highest mad_score being 2.69, this is a larger value but not enough to be worried about as standardizing the column
+# will help mitigate the influence of high values. We are clear to proceed to the next variable. 
+
+# Dropping mad_score
+df4 <- df4 %>%
+  select(-mad_score)
+
+# Moving on to our last numeric variable numwebvisits
+ggplot(df4, aes(x = numwebvisitsmonth)) + geom_histogram(bins = 10)
+
+# With this variable, we see quite significant outliers well above the rest of the distribution. The issue with this is that
+# these outliers will end up skewing the cluster centroids and it is on a variable that I would not consider too important
+# I kept this variable in because I thought it would be interesting to look at post-clustering, but I do not think it is 
+# worthwhile at all to keep in the data if it is going to potentially skew it. We could consider dropping the rows with these
+# outliers, however we might be losing valuable data, in favor of keeping a feature that really isn't crucial to the purpose
+# of this model. Further, a k-means model works better with fewer and higher quality variables. I could also cap the max 
+# values or impute a value here but again I do not like introducing artificial data and I would rather have completely organic
+# data that is cleaned and well representative of the population I am looking to address with fewer, higher quality features.
+# Thusly, in order to maintain the standard across features, since we have some very good ones, dropping the variable, is the 
+# best course of action. I will state that it would be different if we were specifically looking at web engagement, but the 
+# purposes of this model is to discern natural clusters in our client base, based off of spending and demographic information.
+
+# Dropping the Variable
+df4 <- df4 %>%
+  select(-numwebvisitsmonth)
+
+# Next before we can model we need to take a look at our categorical variables. I have a function that creates frequency bar
+# charts for all the categorical variables and that will be our starting point. 
+
+# Creating Frequency barcharts for categorical variables.
+# Freqbar is a custom function that intakes a vector of categorical variables and the dataframe, and creates a frequency bar
+# chart for each variable.
+cat_cols <- c('marital_status', 'education')
+freqbar(cat_cols, df4)
+
+# Starting off with education since it is much more clear in terms of what to do, 2n cycle education is the same as a 
+# master's degree level of education so we will first convert that to Master to simplify the category. 
+
+# Recoding the variable
+df4 <- df4 %>% 
+ # case_when just seems to generally work better always?
+  mutate(education = case_when(
+    education == '2n Cycle' ~ 'Master',
+    education == 'Basic' ~ 'High School', 
+    education == 'Graduation' ~ 'Bachelor',
+    # The line below just ensures that other values are unchanged
+    TRUE ~ education
+  ))
+
+# Confirm output
+table(df4$education)
+
+# Since this variable has a natural ordinal hierarchy to it, recoding it as a factor makes sense. 
+df4$education <- factor(df4$education, levels = c('High School', 'Bachelor', 'Master', 'PhD'))
+
+# Confirm ouput
+levels(df4$education)
+
+# Next up is marital_status. In this variable we have values of 'absurd', 'alone', 'YOLO'. Since these aren't necessary or 
+# or worthwhile distinctions from 'single' and single is more than likely the applicable category, we will impute these
+# values to 'single'
+
+# Cleaning marital_status
+df4 <- df4 %>%
+  mutate(marital_status = case_when(
+    marital_status %in% c('Absurd', 'Alone', 'YOLO') ~ 'Single',
+    TRUE ~ marital_status
+  ))
+
+# Confirming output
+table(df4$marital_status)
+
+# Rerun Freqbar
+freqbar(cat_cols, df4)
+
+# With everything looking good on the categorical variables, the last step is to one-hot encode marital_status, since education
+# is a factor and has an inherent numerical ranking, it does not require numeric conversion. Since k-means clustering can only
+# use numeric values we will have to one-hot encode the character variable marital_status. 
+
+# Using a modelmatrix to autogenerate the one-hot encoding
+cats1 <- model.matrix(~ marital_status -1, data = df4) # -1 removes the auto-generated intercept column.
+
+# Before you cbind the new cols and remove the original column, you should run a colSums() on the new var to confirm the 
+# values from the table() of the original variable that we have above.
+colSums(cats1)
+
+# Since the values match up we are good to replace.
+
+# Creating a 2nd dataset iteration and binding the output from Model.Matrix
+df4 <- cbind(df4, cats1) %>%
+  select(-marital_status)
+
+# Confirm encoding
+glimpse(df4)
+
+# The final step for our categorical variables is to combine teen/kid home. I don't think the distinction between the two
+# will be all too valuable, and the variables will probably be more impactful if converted to a binary children variable
+# where they either have kids or not. 
+
+# First, we want to add these columns together in a separate column that we will use to later validate our output.
+kids_val <- df4$teenhome + df4$kidhome
+
+# We pull a table here, and all non-zero values are houses with either a child or teenager at home.
+table(kids_val)
+
+# Our total houses with either are 1577
+
+# Next we combine both columns to a single variable
+df4 <- df4 %>%
+  mutate(children = ifelse(kids_val > 0, 1, 0))
+
+# Now when we pull a table of the new variable children, we should see 1577 values of 1 and 628 values of 0
+table(df4$children)
+
+# With our output confirmed, we may now drop both kid/teenhome columns and relocate() it back to its original position
+df4 <- df4 %>%
+  select(-c(teenhome, kidhome)) %>%
+  relocate(children, .before = days_cust)
+
+# With all of the cleaning work done for both numeric/categorical variables, the last step is to scale our numeric variables.
+# In order to prevent large values from skewing our clusters, we use scale() which converts the values in a column to # of 
+# standard deviations from the mean of the column itself. This allows us to represent things like 20 days and $90,000 as equal
+# values assuming they are the same distance in standard deviations away from the mean, and this is a required step for 
+# k-means clustering. 
+
+# Names vector
+sc_cols <- c('age', 'income', 'days_cust', 'recency', 'total_spending', 'total_purchases')
+
+# Since we will be scaling values and dropping the id column this is a good time for a new dataframe iteration
+# Probably should have included one a bit earlier as well to be honest.
+df5 <- df4 %>%
+  # Since id is an identifier column and this will be our modeling dataset, we may remove it
+  select(-id)
+
+# Scaling the numeric values
+df5[, sc_cols] <- scale(df5[,sc_cols])
+
+# Confirm the scaling worked.
+# Although the dataframe is updated, we still subset by the original numeric names vector since it will skip over
+# the non-relevant columns. 
+apply(df5[, sc_cols], 2, mean)  # Should be close to 0
+apply(df5[, sc_cols], 2, sd) # should be 1
+
+# Finally, with all of the data munging complete, it is time to model!
+# But first, we export the dataframe as a sharable dataset!
+csv(df5, 'clustmodel')
+
+# K-Means Clustering Model
+
+# First, we need to establish the optimal amount of clusters for our data.
+
+# Need factoextra package
+install.packages('factoextra')
+library('factoextra')
+
+# Elbow Method + Silhouette. 
+# I prefer both here. It's not that much extra work to double validate our cluster count. 
+
+# Elbow First
+# Seed for reproduction
+set.seed(1111)
+fviz_nbclust(df5, kmeans, method = 'wss')
+
+# Immediately encountered an error. Fantastic. Looks like we have NA values coming from somewhere. Potential to be datatype
+# mismatch.
+
+# Check NAs
+na_sums(df5)
+
+# No NAs
+
+# More than likely an issue with the factor variable still being in character form 
+# New dataframe iteration just in case.
+df6 <- df5
+# Factor converts to numeric via the ranking system coming from factoring starting with the lowest level at 1, in this case 1 =
+# high school.
+df6$education <- as.numeric(df6$education)
+
+# 2nd Attempt
+fviz_nbclust(df6, kmeans, method = 'wss')
+
+# Since the elbow method seems to be somewhere around 3/4 clusters, as sure as the sun rises, we need to check the silhouette
+# score to determine our cluster amount. 
+
+# Silhouette method
+fviz_nbclust(df6, kmeans, method = 'silhouette')
+
+# From our silhouette scores it looks like 2 would be the most optimal clustering, however given that ideally we would have more
+# clearly defined clusters, and 3/4 were suggested from the elbow method we will use both and compare the clustering outputs.
+
+# Clustering for K = 2
+# K = number of clusters
+k2 <- kmeans(df6, centers = 2, nstart = 25)
+df6$cluster_k2 <- as.factor(k2$cluster) 
+
+# Clustering for K = 3
+k3 <- kmeans(df6, centers = 3, nstart = 25)
+df6$cluster_k3 <- as.factor(k3$cluster)
+
+# With the clusters created, we need to check the visual representations to better understand the fitting of both.
+
+# Graph of K = 2
+ggplot(df6, aes(x = total_spending, y = income, color = cluster_k2)) +
+  geom_point(alpha = .5, size = 3) + # Good practice to always set a transparency value for overlap readability. 
+  labs(title = "K = 2")
+
+# Graph of K = 3
+ggplot(df6, aes(x = total_spending, y = income, color = cluster_k3)) +
+  geom_point(alpha = .5, size = 3) + # Good practice to always set a transparency value for overlap readability. 
+  labs(title = "K = 3")
+
+# Well between the two options it is clear the k=2 is the optimal amount of clusters. In k = 3, the distinction is non-existent
+# between groups 1 and 3. Perhaps it could be argued that they make up the lower incomes of the overall lower spenders, however
+# the overlap is a bit too much in my opinion, and quality is also a consideration as well. There is no need here to force a 
+# 3rd grouping when our groups in k = 2 are highly distinct from one another and well separated. Diminishing quality for an 
+# extra group is most certainly not worth it. Two groups is more than appropriate for what we would expect from spending groups
+# in general. High vs low. We will proceed using k = 2!
+
+# With our clusters determined, 1 = lower spenders, 2 = higher spenders, we can now begin building profiles for these groups.
+# The purpose of k-means cluster is to assign groupings that naturally occur mathematically and then derive summary differences
+# between those groups to drive decision making. For example, it might be the case that lower spenders prefer much smaller 
+# purchases/items in which case a marketing campaign for these groups would be focused on smaller, cheaper products.
+
+# Checking General Differences
+# A good place to start is means across the board between variables and see if anything jumps out us. This is essentially EDA
+# but with two defined groups, so it should be treated as highly exploratory.
+
+# Firstly, what is the total number of observations per group. 
+df6 %>%
+  group_by(cluster_k2) %>%
+  summarise(n = n())
+
+# 1144 observations in group 1, 1061 in group 2. An even split like this is nice, because it means we have even representation
+# of groups when making comparisons, and it means absolute numbers like how many houses have children are comparable since we
+# have a relatively comparable number of observations between each group. 
+
+# Means work here since all of our variables were converted to numeric values. For example, the higher the mean level of 
+# education, the more educated that group is generally speaking because higher levels of education have higher weighting.
+# I.E high school = 1, PhD = 4. 
+df7 <- df6 %>%
+  group_by(cluster_k2) %>%
+  summarise(
+                  age = mean(age),
+                  education = mean(education), 
+                  income = mean(income),
+                  children = sum(children), # Because this is a binary variable, n is similar between groups sum is fine here.  
+                  days_cust = mean(days_cust), 
+                  recency = mean(recency),
+                  total_spending = mean(total_spending), 
+                  total_purchases = mean(total_purchases), 
+                  married = sum(marital_statusMarried), # Binary so we sum.
+                  single = sum(marital_statusSingle) # Binary so we sum. 
+  )
+
+# Print Results
+print(df7)
+
+# Looking at our output. Starting from the left, while we do have differences in age, these differences at first glance seem
+# fairly minimal. They might suggest that higher spenders(2) tend to be older, but the difference is not really strong enough 
+# to be worth investigating. Education seems to be fairly dismissable. The difference is not nearly large enough to indicate
+# it's strength in determining spending habits. With Income and Total Spending they are almost identical in terms of their 
+# differences. This suggests that income is an extremely strong predictor of total spending which of course makes logical sense
+# but this may represent the basis for a spending prediction model in the future due to the strong correlation. This would also
+# suggest that if we are marketing for premiumly priced goods, targeting higher level earners is recommended. Children is an 
+# interesting one as well as in the lower spender groups they have almost double the amount of households with children. This is
+# a fantastic discovery as this would indicate that focusing on more family oriented purchases or marketing would be valuable here. 
+# Days as a customer and Recency were not nearly significant enough in their differences to warrant investigation. 
+# Total_purchases however is a very large difference and absolutely worth investigating because it might indicate spending nature.
+# Such as, frequent small purchases or less frequent more moderate purchases. Lastly, married and single were essentially evenly
+# split across the two, and nor worth looking into. 
+
+# Proceeding forward, we now want to retroactively add the cluster labels back to the non-scaled dataset. df4. Since we 
+# didn't shuffle rows at all we should be able to add the column back with no issues. We can also confirm this by checking 
+# the order of values that appear in education since those will be directly interpretable across dataframes. 
+
+# Add cluster label column back to df4 and adding a new dataframe iteration
+df8 <- df4
+df8$group <- df6$cluster_k2
+
+# Grab head of df6$education and head of df8$education to check order (Not perfect but better than nothing)
+head(df6$education, n = 10)
+head(df8$education, n = 10)
+
+# Iterating another dataframe to pull only the data I want to look at. 
+df9 <- df8 %>%
+  select(c(income, total_spending, total_purchases, group))
+
+# Creating an average spent per purchase, and an pct income expenditure variable
+df9 <- df9 %>%
+  mutate(avg_purchase = total_spending/total_purchases, pct_income = round(((total_spending / income) * 100), 2))
+
+# Creating an aggregated dataframe
+df10 <- df9 %>%
+  group_by(group) %>%
+  summarise(avg_purchases = round(mean(total_purchases),2), 
+            avg_spent_purchase = round(mean(avg_purchase),2), 
+            avg_income = round(mean(pct_income), 2))
+
+# Before we can begin visualizing we have an issue with inf being in df10. This is more than likely due to a division by 0. 
+# Check for min
+min(df9$total_purchases)
+
+# Indeed we have 0, next is to check those rows. 
+
+df0s <- df9 %>%
+  filter(total_purchases == 0)
+
+# Given that it is only two rows containing a zero, out of 1144 observations, and we are no longer modeling, we could impute 1,
+# since their total spending is very low, however whether we impute 1 or remove 2 observations out of 1144, it is unlikely 
+# that either way would make a highly significant impact. Also this brings the number of observations between groups closer,
+# which again probably also relatively insignificant but it is a technical bonus to removal. I think dropping these two rows is 
+# totally fine here.
+
+# Recreating df9 with a != 0 filter
+df9 <- df8 %>%
+  filter(total_purchases != 0) %>%
+  select(c(income, total_spending, total_purchases, group))
+
+# Rerunning aggregate code
+
+# Creating an average spent per purchase, and an pct income expenditure variable
+df9 <- df9 %>%
+  mutate(avg_purchase = total_spending/total_purchases, pct_income = round(((total_spending / income) * 100), 2))
+
+# Creating an aggregated dataframe
+df10 <- df9 %>%
+  group_by(group) %>%
+  summarise(avg_purchases = round(mean(total_purchases),2), 
+            avg_spent_purchase = round(mean(avg_purchase),2), 
+            avg_income_spent = round(mean(pct_income), 2))
+
+# With the general aggregation solved we can now create visuals to highlight the primary takeaways and conclude our analysis.
+
+# Differences of # of households with children by group. 
+ggplot(df8, aes(x = group, y = children, fill = group)) +
+  geom_bar(stat = 'identity') +
+  labs(title = '# of Households With Children', 
+       x = 'Group',
+       y = '# Of Households with children',
+       fill = 'Cluster') +
+  scale_fill_manual(values = c('salmon', 'cyan'), 
+                    labels = c('Low Spenders', 'High Spenders')) +
+  theme_dark() + 
+  theme(plot.title = element_text(hjust = .5))
+
+# Average number of purchases by group.
+ggplot(df10, aes(x = group, y = avg_purchases, fill = group)) +
+  geom_bar(stat = 'identity') +
+  labs(title = 'Average # of Purchases Per Person by Group', 
+       x = 'Group',
+       y = 'Avg # of Purchases',
+       fill = 'Cluster') +
+  scale_fill_manual(values = c('pink', 'lightblue'),
+                    labels = c('Low Spenders', 'High Spenders')) +
+  theme_dark() +
+  theme(plot.title = element_text(hjust = .5))
+
+# Average Spent per purchase.
+ggplot(df10, aes(x = group, y = avg_spent_purchase, fill = group)) +
+  geom_bar(stat = 'identity') +
+  labs(title = 'Average Spent Per Purchase by Group', 
+       x = 'Group',
+       y = 'Avg $ Spent',
+       fill = 'Cluster') +
+  scale_fill_manual(values = c('darkred', 'darkblue'),
+                    labels = c('Low Spenders', 'High Spenders')) +
+  theme_dark() +
+  theme(plot.title = element_text(hjust = .5))
+
+# Average Percentage of Income Spent
+ggplot(df10, aes(x = group, y = avg_income_spent, fill = group)) +
+  geom_bar(stat = 'identity') +
+  labs(title = 'Average Percentage of Income Spent by Group', 
+       x = 'Group',
+       y = 'Avg % of Income Spent',
+       fill = 'Cluster') +
+  scale_fill_manual(values = c('lightcoral', 'royalblue'),
+                    labels = c('Low Spenders', 'High Spenders')) +
+  theme_dark() +
+  theme(plot.title = element_text(hjust = .5))
+
+# Conclusion
+
+# With all of our visualizations said and done we can now visually demonstrate our key takeaways from these clusters. Firstly, 
+# in the lower spenders, cluster 1, we found that they had approximately double the amount of households with children than 
+# higher spenders, cluster 2. This is absolutely a key point to take away because this opens up quite a few doors in terms of potential
+# marketing strategies regarding family oriented goods. 2nd, while we didn't find anything too striking in terms of the
+# average number of purchases, we can conclude from the data, that lower spenders will tend to purchase less in smaller amounts
+# while higher spends will purchase far more frequently. This is useful to know since it tells us our potential product mix that
+# we might try to market to these groups. 3rd, we found that higher spenders will spend over 4x the amount on average per 
+# purchase than their lower spender counterparts. This implies that towards lower spenders we should focus on budget friendly
+# products or anything that could potentially be low cost or child related of course. And for higher spenders any premium 
+# products that are higher in cost may be offered. Finally, we observed that on average, high spenders will spend over 4x more
+# of their current income on average than their low spender counterparts. This may allow us to further better predict spending
+# given that we potentially have an upper bound, and our proximity to this boundary may also be indicative of the success of 
+# further marketing campaigns.
